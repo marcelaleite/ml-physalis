@@ -16,6 +16,12 @@ eggs/
 .eggs/
 lib/
 lib64/
+lib64/*
+bin/
+etc/
+include/
+share/
+!lib64/
 parts/
 sdist/
 var/
@@ -24,6 +30,7 @@ share/python-wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+*.cfg
 MANIFEST
 
 # PyInstaller
@@ -156,6 +163,7 @@ venv/
 ENV/
 env.bak/
 venv.bak/
+jupyterenv/
 
 # Spyder project settings
 .spyderproject
@@ -223,9 +231,10 @@ __marimo__/
 *fasta
 
 #jupyterenv
-./jupyterenv/
-*
 
 
 
 
+
+
+jupytherenv/lib64
