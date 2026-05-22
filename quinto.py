@@ -47,6 +47,12 @@ from sklearn.ensemble import RandomForestClassifier
 
 from xgboost import XGBClassifier
 
+from sklearn.svm import SVC 
+from sklearn.preprocessing import StandardScaler 
+from sklearn.pipeline import Pipeline 
+from sklearn.metrics import ( precision_score, recall_score, balanced_accuracy_score )
+
+
 # ==========================================================
 # CLUSTERING / REDUÇÃO
 # ==========================================================
@@ -68,9 +74,9 @@ import seaborn as sns
 # CONFIGURAÇÕES
 # ==========================================================
 
-Entrez.email = "SEU_EMAIL@email.com"
+Entrez.email = "marcela.leite@ifc.edu.br"
 
-OUTPUT_DIR = "pipeline_rgenes_proteinas"
+OUTPUT_DIR = "pipeline2"
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
@@ -683,45 +689,75 @@ xgb_pred = xgb.predict(X_test)
 
 xgb_prob = xgb.predict_proba(X_test)[:,1]
 
+# ========================================================== 
+# SUPPORT VECTOR MACHINE 
+# ========================================================== 
+
+svm_model = Pipeline([ ("scaler", StandardScaler()),
+                    ("svm", SVC( kernel="rbf", 
+                                probability=True, 
+                                class_weight="balanced", 
+                                C=2, gamma="scale", 
+                                random_state=42 )) ]) 
+svm_model.fit(X_train, y_train) 
+svm_pred = svm_model.predict(X_test) 
+svm_prob = svm_model.predict_proba(X_test)[:,1]
+
 # ==========================================================
 # AVALIAÇÃO
 # ==========================================================
 
 def avaliar_modelo(nome, y_true, pred, prob):
-
     print("\n")
     print("="*60)
     print(nome)
     print("="*60)
-
     print(classification_report(y_true, pred))
-
     auc = roc_auc_score(y_true, prob)
-
     pr_auc = average_precision_score(y_true, prob)
-
     mcc = matthews_corrcoef(y_true, pred)
-
     f1 = f1_score(y_true, pred)
+    precision = precision_score(y_true, pred)
+    recall = recall_score(y_true, pred)
+    balanced_acc = balanced_accuracy_score(
+        y_true,
+        pred
+    )
+    print("ROC-AUC          :", auc)
+    print("PR-AUC           :", pr_auc)
+    print("MCC              :", mcc)
+    print("F1               :", f1)
+    print("Precision        :", precision)
+    print("Recall           :", recall)
+    print("Balanced Accuracy:", balanced_acc)
 
-    print("ROC-AUC:", auc)
-    print("PR-AUC :", pr_auc)
-    print("MCC    :", mcc)
-    print("F1     :", f1)
+    # ======================================================
+    # MATRIZ CONFUSÃO
+    # ======================================================
 
     cm = confusion_matrix(y_true, pred)
-
     plt.figure(figsize=(6,5))
-
     sns.heatmap(
         cm,
         annot=True,
         fmt="d",
         cmap="Blues"
     )
-
     plt.title(f"Confusion Matrix - {nome}")
+    plt.xlabel("Predicted")
+    plt.ylabel("True")
+    plt.show()
 
+    # ======================================================
+    # ROC
+    # ======================================================
+    fpr, tpr, _ = roc_curve(y_true, prob)
+    plt.figure(figsize=(6,5))
+    plt.plot(fpr, tpr)
+    plt.plot([0,1],[0,1],'--')
+    plt.xlabel("False Positive Rate")
+    plt.ylabel("True Positive Rate")
+    plt.title(f"ROC Curve - {nome}")
     plt.show()
 
 avaliar_modelo(
@@ -736,6 +772,13 @@ avaliar_modelo(
     y_test,
     xgb_pred,
     xgb_prob
+)
+
+avaliar_modelo(
+    "SVM",
+    y_test,
+    svm_pred,
+    svm_prob
 )
 
 # ==========================================================
@@ -773,9 +816,22 @@ scores_xgb = cross_val_score(
     scoring="roc_auc"
 )
 
-print("\nRF ROC-AUC:", scores_rf.mean())
+scores_svm = cross_val_score(
 
+    svm_model,
+
+    X,
+
+    y,
+
+    cv=cv,
+
+    scoring="roc_auc"
+)
+
+print("\nRF ROC-AUC:", scores_rf.mean())
 print("XGB ROC-AUC:", scores_xgb.mean())
+print("SVM ROC-AUC:", scores_svm.mean())
 
 # ==========================================================
 # FEATURE IMPORTANCE
@@ -811,176 +867,126 @@ plt.title("Top Features")
 
 plt.show()
 
+```python id="hfgq4m"
 # ==========================================================
-# PCA
+# VALIDAÇÃO BIOLÓGICA DOS CANDIDATOS
 # ==========================================================
 
-pca = PCA(n_components=2)
+print("\nVALIDAÇÃO BIOLÓGICA")
 
-X_pca = pca.fit_transform(X)
+top = df_res.head(50)
 
-pca_df = pd.DataFrame({
+motif_stats = {
 
-    "PC1": X_pca[:,0],
+    "P_LOOP": 0,
+    "GLPL": 0,
+    "MHD": 0
 
-    "PC2": X_pca[:,1],
+}
 
-    "label": y
+for idx, row in top.iterrows():
 
+    transcript_id = row["id"]
+
+    for record in SeqIO.parse(
+        # f"{OUTPUT_DIR}/physalis_transcriptoma.fasta",
+        f"{OUTPUT_DIR}/arabidopsis_transcriptoma.fasta",
+        "fasta"
+    ):
+
+        if record.id == transcript_id:
+
+            protein_seq = encontrar_maior_orf(
+                str(record.seq)
+            )
+
+            if "GKTT" in protein_seq:
+                motif_stats["P_LOOP"] += 1
+
+            if "GLPL" in protein_seq:
+                motif_stats["GLPL"] += 1
+
+            if "MHD" in protein_seq:
+                motif_stats["MHD"] += 1
+
+            break
+
+print("\nMotifs encontrados nos TOP candidatos:")
+
+for k,v in motif_stats.items():
+
+    print(k, ":", v)
+
+# ==========================================================
+# COMPARAÇÃO MODELOS
+# ==========================================================
+
+comparacao = pd.DataFrame({
+
+    "Modelo": [
+
+        "Random Forest",
+        "XGBoost",
+        "SVM"
+
+    ],
+
+    "ROC_AUC": [
+        roc_auc_score(y_test, rf_prob),
+        roc_auc_score(y_test, xgb_prob),
+        roc_auc_score(y_test, svm_prob)
+    ],
+    "F1": [
+        f1_score(y_test, rf_pred),
+        f1_score(y_test, xgb_pred),
+        f1_score(y_test, svm_pred)
+    ]
 })
 
-plt.figure(figsize=(8,6))
-
-sns.scatterplot(
-
-    data=pca_df,
-
-    x="PC1",
-
-    y="PC2",
-
-    hue="label"
+print("\nCOMPARAÇÃO MODELOS")
+print(comparacao)
+comparacao.to_csv(
+    f"{OUTPUT_DIR}/comparacao_modelos.csv",
+    index=False
 )
-
-plt.title("PCA")
-
-plt.show()
-
-# ==========================================================
-# TSNE
-# ==========================================================
-
-tsne = TSNE(
-
-    n_components=2,
-
-    perplexity=30,
-
-    random_state=42
-)
-
-X_tsne = tsne.fit_transform(X)
-
-tsne_df = pd.DataFrame({
-
-    "TSNE1": X_tsne[:,0],
-
-    "TSNE2": X_tsne[:,1],
-
-    "label": y
-
-})
-
-plt.figure(figsize=(8,6))
-
-sns.scatterplot(
-
-    data=tsne_df,
-
-    x="TSNE1",
-
-    y="TSNE2",
-
-    hue="label"
-)
-
-plt.title("t-SNE")
-
-plt.show()
-
-# ==========================================================
-# KMEANS
-# ==========================================================
-
-kmeans = KMeans(
-    n_clusters=2,
-    random_state=42
-)
-
-clusters_kmeans = kmeans.fit_predict(X)
-
-sil = silhouette_score(X, clusters_kmeans)
-
-db = davies_bouldin_score(X, clusters_kmeans)
-
-print("\nKMeans")
-print("Silhouette:", sil)
-print("Davies-Bouldin:", db)
-
-# ==========================================================
-# HDBSCAN
-# ==========================================================
-
-clusterer = hdbscan.HDBSCAN(
-    min_cluster_size=15
-)
-
-clusters_hdb = clusterer.fit_predict(X)
-
-# ==========================================================
-# VISUALIZAÇÃO CLUSTERS
-# ==========================================================
-
-cluster_df = pd.DataFrame({
-
-    "TSNE1": X_tsne[:,0],
-
-    "TSNE2": X_tsne[:,1],
-
-    "cluster": clusters_hdb
-
-})
-
-plt.figure(figsize=(8,6))
-
-sns.scatterplot(
-
-    data=cluster_df,
-
-    x="TSNE1",
-
-    y="TSNE2",
-
-    hue="cluster",
-
-    palette="tab20"
-)
-
-plt.title("Clusters HDBSCAN")
-
-plt.show()
 
 # ==========================================================
 # BAIXAR TRANSCRIPTOMA PHYSALIS
 # ==========================================================
 
-physalis_query = """
-"Physalis peruviana"[Organism]
-AND
-(
-transcriptome
-OR
-mRNA
-OR
-RNA-Seq
-OR
-TSA
-)
-NOT
-(
-genome
-OR
-chromosome
-OR
-scaffold
-OR
-contig
-)
-"""
+# physalis_query = """
+# "Physalis peruviana"[Organism]
+# AND
+# (
+# transcriptome
+# OR
+# mRNA
+# OR
+# RNA-Seq
+# OR
+# TSA
+# )
+# NOT
+# (
+# genome
+# OR
+# chromosome
+# OR
+# scaffold
+# OR
+# contig
+# )
+# """
+
+# baixar_transcriptoma(
+#     physalis_query,
+#     f"{OUTPUT_DIR}/physalis_transcriptoma.fasta",
+#     3000
+# )
 
 baixar_transcriptoma(
-    physalis_query,
-    f"{OUTPUT_DIR}/physalis_transcriptoma.fasta",
+    arabidopsis_query,
+    f"{OUTPUT_DIR}/arabidopsis_transcriptoma.fasta",
     3000
 )
 
@@ -990,11 +996,14 @@ baixar_transcriptoma(
 
 resultados = []
 
+# for record in SeqIO.parse(
+#     f"{OUTPUT_DIR}/physalis_transcriptoma.fasta",
+#     "fasta"
+# ):
 for record in SeqIO.parse(
-    f"{OUTPUT_DIR}/physalis_transcriptoma.fasta",
+    f"{OUTPUT_DIR}/arabidopsis_transcriptoma.fasta",
     "fasta"
 ):
-
     desc = record.description.lower()
 
     bad_terms = [
@@ -1032,17 +1041,11 @@ for record in SeqIO.parse(
         continue
 
     feats = np.array(feats).reshape(1,-1)
-
     prob = xgb.predict_proba(feats)[0][1]
-
     resultados.append({
-
         "id": record.id,
-
         "descricao": record.description,
-
         "protein_length": len(protein_seq),
-
         "probabilidade_resistencia": prob
 
     })
@@ -1059,7 +1062,8 @@ df_res = df_res.sort_values(
 )
 
 df_res.to_csv(
-    f"{OUTPUT_DIR}/predicoes_physalis.csv",
+    # f"{OUTPUT_DIR}/predicoes_physalis.csv",
+    f"{OUTPUT_DIR}/predicoes_arabidopsis.csv",
     index=False
 )
 
@@ -1067,25 +1071,6 @@ print("\nTOP CANDIDATOS PHYSALIS")
 
 print(df_res.head(20))
 
-# ==========================================================
-# EXPORTAR CLUSTERS
-# ==========================================================
 
-cluster_export = pd.DataFrame({
-
-    "id": ids,
-
-    "label": y,
-
-    "kmeans_cluster": clusters_kmeans,
-
-    "hdbscan_cluster": clusters_hdb
-
-})
-
-cluster_export.to_csv(
-    f"{OUTPUT_DIR}/clusters.csv",
-    index=False
-)
 
 print("\nPIPELINE FINALIZADO")
