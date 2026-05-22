@@ -1,6 +1,11 @@
 # ==========================================================
-# PIPELINE PROTEICO
-# PREDIÇÃO DE R-GENES EM PHYSALIS
+# PIPELINE COMPLETO
+# R-GENE PREDICTION EM PHYSALIS PERUVIANA
+# BASEADO EM PROTEÍNAS + ORF PREDICTION
+# ==========================================================
+
+# ==========================================================
+# BIBLIOTECAS
 # ==========================================================
 
 import os
@@ -13,6 +18,7 @@ import pandas as pd
 
 from Bio import Entrez
 from Bio import SeqIO
+from Bio.Seq import Seq
 from Bio.SeqUtils.ProtParam import ProteinAnalysis
 
 # ==========================================================
@@ -42,7 +48,7 @@ from sklearn.ensemble import RandomForestClassifier
 from xgboost import XGBClassifier
 
 # ==========================================================
-# DIMENSIONALIDADE / CLUSTER
+# CLUSTERING / REDUÇÃO
 # ==========================================================
 
 from sklearn.decomposition import PCA
@@ -59,23 +65,23 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 
 # ==========================================================
-# CONFIG
+# CONFIGURAÇÕES
 # ==========================================================
 
 Entrez.email = "SEU_EMAIL@email.com"
 
-OUTPUT_DIR = "protein_rgenes"
+OUTPUT_DIR = "pipeline_rgenes_proteinas"
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 # ==========================================================
-# DOWNLOAD PROTEÍNAS NCBI
+# DOWNLOAD PROTEÍNAS
 # ==========================================================
 
-def baixar_proteinas(query, arquivo_saida, max_records=1500):
+def baixar_proteinas(query, arquivo_saida, max_records=2000):
 
     print("\n================================")
-    print("DOWNLOAD")
+    print("DOWNLOAD NCBI")
     print("================================")
 
     handle = Entrez.esearch(
@@ -88,13 +94,52 @@ def baixar_proteinas(query, arquivo_saida, max_records=1500):
 
     ids = record["IdList"]
 
-    print("IDs:", len(ids))
+    print("Proteínas encontradas:", len(ids))
 
     if len(ids) == 0:
         return
 
     handle = Entrez.efetch(
         db="protein",
+        id=ids,
+        rettype="fasta",
+        retmode="text"
+    )
+
+    fasta = handle.read()
+
+    with open(arquivo_saida, "w") as f:
+        f.write(fasta)
+
+    print("Arquivo salvo:", arquivo_saida)
+
+# ==========================================================
+# DOWNLOAD TRANSCRIPTOMA
+# ==========================================================
+
+def baixar_transcriptoma(query, arquivo_saida, max_records=3000):
+
+    print("\n================================")
+    print("DOWNLOAD TRANSCRIPTOMA")
+    print("================================")
+
+    handle = Entrez.esearch(
+        db="nucleotide",
+        term=query,
+        retmax=max_records
+    )
+
+    record = Entrez.read(handle)
+
+    ids = record["IdList"]
+
+    print("Transcritos encontrados:", len(ids))
+
+    if len(ids) == 0:
+        return
+
+    handle = Entrez.efetch(
+        db="nucleotide",
         id=ids,
         rettype="fasta",
         retmode="text"
@@ -163,11 +208,11 @@ NOT
 (
 partial
 OR
+fragment
+OR
 hypothetical
 OR
 predicted
-OR
-fragment
 )
 """
 
@@ -195,11 +240,11 @@ OR
 OR
 "photosystem"
 OR
+"elongation factor"
+OR
 "glycolysis"
 OR
 "metabolic enzyme"
-OR
-"elongation factor"
 )
 NOT
 (
@@ -216,7 +261,7 @@ OR
 """
 
 # ==========================================================
-# DOWNLOADS
+# DOWNLOAD DATASETS
 # ==========================================================
 
 baixar_proteinas(
@@ -259,6 +304,39 @@ def limpar_proteina(seq):
     return seq
 
 # ==========================================================
+# ORF PREDICTION
+# ==========================================================
+
+def encontrar_maior_orf(seq):
+
+    seq = Seq(seq)
+
+    longest = ""
+
+    for strand, nuc in [
+
+        (+1, seq),
+        (-1, seq.reverse_complement())
+
+    ]:
+
+        for frame in range(3):
+
+            translated = str(
+                nuc[frame:].translate(to_stop=False)
+            )
+
+            proteins = translated.split("*")
+
+            for protein in proteins:
+
+                if len(protein) > len(longest):
+
+                    longest = protein
+
+    return longest
+
+# ==========================================================
 # AAC
 # ==========================================================
 
@@ -270,7 +348,9 @@ def amino_acid_composition(seq):
         return [0]*20
 
     return [
+
         seq.count(a)/total
+
         for a in AA
     ]
 
@@ -295,9 +375,41 @@ def dipeptide_composition(seq):
             counts[dp] += 1
 
     return [
+
         counts[d]/total
+
         for d in DIPEPTIDES
     ]
+
+# ==========================================================
+# MOTIFS NB-LRR
+# ==========================================================
+
+def detectar_motifs(seq):
+
+    motifs = {
+
+        "P_LOOP_NTP": "GKTT",
+        "KINASE_1": "VAIK",
+        "GLPL": "GLPL",
+        "MHD": "MHD",
+        "LRR": "LxxLxLxx"
+
+    }
+
+    found = []
+
+    for motif_name, motif in motifs.items():
+
+        if motif.replace("x","") in seq:
+
+            found.append(1)
+
+        else:
+
+            found.append(0)
+
+    return found
 
 # ==========================================================
 # FEATURES BIOQUÍMICAS
@@ -305,9 +417,9 @@ def dipeptide_composition(seq):
 
 def biochemical_features(seq):
 
-    analysis = ProteinAnalysis(seq)
-
     try:
+
+        analysis = ProteinAnalysis(seq)
 
         mw = analysis.molecular_weight()
 
@@ -322,6 +434,7 @@ def biochemical_features(seq):
         helix, turn, sheet = analysis.secondary_structure_fraction()
 
         return [
+
             mw,
             aromaticity,
             instability,
@@ -330,6 +443,7 @@ def biochemical_features(seq):
             helix,
             turn,
             sheet
+
         ]
 
     except:
@@ -344,7 +458,7 @@ def extract_features(seq):
 
     seq = limpar_proteina(seq)
 
-    if len(seq) < 80:
+    if len(seq) < 100:
         return None
 
     try:
@@ -355,9 +469,19 @@ def extract_features(seq):
 
         bio = biochemical_features(seq)
 
+        motifs = detectar_motifs(seq)
+
         length = [len(seq)]
 
-        return aac + dpc + bio + length
+        return (
+
+            aac +
+            dpc +
+            bio +
+            motifs +
+            length
+
+        )
 
     except:
 
@@ -371,7 +495,7 @@ X = []
 y = []
 ids = []
 
-def processar_fasta(fasta, label):
+def processar_proteinas(fasta, label):
 
     total = 0
     validas = 0
@@ -416,12 +540,12 @@ def processar_fasta(fasta, label):
 # PROCESSAMENTO
 # ==========================================================
 
-processar_fasta(
+processar_proteinas(
     f"{OUTPUT_DIR}/positive.fasta",
     1
 )
 
-processar_fasta(
+processar_proteinas(
     f"{OUTPUT_DIR}/negative.fasta",
     0
 )
@@ -453,12 +577,29 @@ bio_cols = [
     "isoelectric_point",
     "helix",
     "turn",
-    "sheet",
-    "length"
+    "sheet"
 
 ]
 
-columns = aac_cols + dpc_cols + bio_cols
+motif_cols = [
+
+    "motif_p_loop",
+    "motif_kinase",
+    "motif_glpl",
+    "motif_mhd",
+    "motif_lrr"
+
+]
+
+columns = (
+
+    aac_cols +
+    dpc_cols +
+    bio_cols +
+    motif_cols +
+    ["length"]
+
+)
 
 # ==========================================================
 # DATAFRAME
@@ -474,7 +615,7 @@ df["label"] = y
 df["id"] = ids
 
 df.to_csv(
-    f"{OUTPUT_DIR}/protein_dataset.csv",
+    f"{OUTPUT_DIR}/dataset_proteico.csv",
     index=False
 )
 
@@ -483,10 +624,14 @@ df.to_csv(
 # ==========================================================
 
 X_train, X_test, y_train, y_test = train_test_split(
+
     X,
     y,
+
     stratify=y,
+
     test_size=0.2,
+
     random_state=42
 )
 
@@ -495,10 +640,15 @@ X_train, X_test, y_train, y_test = train_test_split(
 # ==========================================================
 
 rf = RandomForestClassifier(
+
     n_estimators=500,
+
     max_depth=25,
-    random_state=42,
+
     class_weight="balanced",
+
+    random_state=42,
+
     n_jobs=-1
 )
 
@@ -513,11 +663,17 @@ rf_prob = rf.predict_proba(X_test)[:,1]
 # ==========================================================
 
 xgb = XGBClassifier(
+
     n_estimators=500,
+
     learning_rate=0.05,
+
     max_depth=10,
+
     subsample=0.8,
+
     colsample_bytree=0.8,
+
     random_state=42
 )
 
@@ -531,7 +687,7 @@ xgb_prob = xgb.predict_proba(X_test)[:,1]
 # AVALIAÇÃO
 # ==========================================================
 
-def avaliar(nome, y_true, pred, prob):
+def avaliar_modelo(nome, y_true, pred, prob):
 
     print("\n")
     print("="*60)
@@ -542,18 +698,15 @@ def avaliar(nome, y_true, pred, prob):
 
     auc = roc_auc_score(y_true, prob)
 
+    pr_auc = average_precision_score(y_true, prob)
+
     mcc = matthews_corrcoef(y_true, pred)
 
     f1 = f1_score(y_true, pred)
 
-    pr_auc = average_precision_score(y_true, prob)
-
     print("ROC-AUC:", auc)
-
     print("PR-AUC :", pr_auc)
-
     print("MCC    :", mcc)
-
     print("F1     :", f1)
 
     cm = confusion_matrix(y_true, pred)
@@ -567,18 +720,18 @@ def avaliar(nome, y_true, pred, prob):
         cmap="Blues"
     )
 
-    plt.title(nome)
+    plt.title(f"Confusion Matrix - {nome}")
 
     plt.show()
 
-avaliar(
+avaliar_modelo(
     "Random Forest",
     y_test,
     rf_pred,
     rf_prob
 )
 
-avaliar(
+avaliar_modelo(
     "XGBoost",
     y_test,
     xgb_pred,
@@ -590,24 +743,33 @@ avaliar(
 # ==========================================================
 
 cv = StratifiedKFold(
+
     n_splits=5,
+
     shuffle=True,
+
     random_state=42
 )
 
 scores_rf = cross_val_score(
+
     rf,
     X,
     y,
+
     cv=cv,
+
     scoring="roc_auc"
 )
 
 scores_xgb = cross_val_score(
+
     xgb,
     X,
     y,
+
     cv=cv,
+
     scoring="roc_auc"
 )
 
@@ -670,9 +832,13 @@ pca_df = pd.DataFrame({
 plt.figure(figsize=(8,6))
 
 sns.scatterplot(
+
     data=pca_df,
+
     x="PC1",
+
     y="PC2",
+
     hue="label"
 )
 
@@ -685,8 +851,11 @@ plt.show()
 # ==========================================================
 
 tsne = TSNE(
+
     n_components=2,
+
     perplexity=30,
+
     random_state=42
 )
 
@@ -705,9 +874,13 @@ tsne_df = pd.DataFrame({
 plt.figure(figsize=(8,6))
 
 sns.scatterplot(
+
     data=tsne_df,
+
     x="TSNE1",
+
     y="TSNE2",
+
     hue="label"
 )
 
@@ -731,9 +904,7 @@ sil = silhouette_score(X, clusters_kmeans)
 db = davies_bouldin_score(X, clusters_kmeans)
 
 print("\nKMeans")
-
 print("Silhouette:", sil)
-
 print("Davies-Bouldin:", db)
 
 # ==========================================================
@@ -763,53 +934,99 @@ cluster_df = pd.DataFrame({
 plt.figure(figsize=(8,6))
 
 sns.scatterplot(
+
     data=cluster_df,
+
     x="TSNE1",
+
     y="TSNE2",
+
     hue="cluster",
+
     palette="tab20"
 )
 
-plt.title("HDBSCAN")
+plt.title("Clusters HDBSCAN")
 
 plt.show()
 
 # ==========================================================
-# PHYSALIS PROTEÍNAS
+# BAIXAR TRANSCRIPTOMA PHYSALIS
 # ==========================================================
 
 physalis_query = """
 "Physalis peruviana"[Organism]
 AND
 (
-protein
+transcriptome
 OR
-proteome
+mRNA
 OR
-translated
+RNA-Seq
+OR
+TSA
+)
+NOT
+(
+genome
+OR
+chromosome
+OR
+scaffold
+OR
+contig
 )
 """
 
-baixar_proteinas(
+baixar_transcriptoma(
     physalis_query,
-    f"{OUTPUT_DIR}/physalis.fasta",
-    1000
+    f"{OUTPUT_DIR}/physalis_transcriptoma.fasta",
+    3000
 )
 
 # ==========================================================
-# PREDIÇÃO PHYSALIS
+# PREDIÇÃO EM PHYSALIS
 # ==========================================================
 
 resultados = []
 
 for record in SeqIO.parse(
-    f"{OUTPUT_DIR}/physalis.fasta",
+    f"{OUTPUT_DIR}/physalis_transcriptoma.fasta",
     "fasta"
 ):
 
-    seq = str(record.seq)
+    desc = record.description.lower()
 
-    feats = extract_features(seq)
+    bad_terms = [
+
+        "partial",
+        "non-coding",
+        "ncrna",
+        "lncrna",
+        "mirna",
+        "sirna"
+
+    ]
+
+    if any(t in desc for t in bad_terms):
+        continue
+
+    rna_seq = str(record.seq)
+
+    # ==========================================
+    # ENCONTRAR MAIOR ORF
+    # ==========================================
+
+    protein_seq = encontrar_maior_orf(rna_seq)
+
+    if len(protein_seq) < 100:
+        continue
+
+    # ==========================================
+    # FEATURES
+    # ==========================================
+
+    feats = extract_features(protein_seq)
 
     if feats is None:
         continue
@@ -824,9 +1041,15 @@ for record in SeqIO.parse(
 
         "descricao": record.description,
 
+        "protein_length": len(protein_seq),
+
         "probabilidade_resistencia": prob
 
     })
+
+# ==========================================================
+# RESULTADOS
+# ==========================================================
 
 df_res = pd.DataFrame(resultados)
 
@@ -840,7 +1063,7 @@ df_res.to_csv(
     index=False
 )
 
-print("\nTOP CANDIDATOS")
+print("\nTOP CANDIDATOS PHYSALIS")
 
 print(df_res.head(20))
 
