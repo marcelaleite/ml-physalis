@@ -219,17 +219,12 @@ __marimo__/
 
 #datasets
 ./arquivos/
-.csv
+*csv
+*fasta
 
 #jupyterenv
-./jupyterenv
-./jupyterenv/bin/
-./jupyterenv/etc/
-./jupyterenv/include/
-./jupyterenv/lib/
-./jupyterenv/lib64/
-./jupyterenv/share/
-./jupyterenv/.cfg
+./jupyterenv/
+*
 
 
 
