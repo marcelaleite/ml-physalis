@@ -216,3 +216,21 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+#datasets
+./arquivos/
+.csv
+
+#jupyterenv
+./jupyterenv
+./jupyterenv/bin/
+./jupyterenv/etc/
+./jupyterenv/include/
+./jupyterenv/lib/
+./jupyterenv/lib64/
+./jupyterenv/share/
+./jupyterenv/.cfg
+
+
+
+
