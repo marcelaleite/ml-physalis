@@ -226,7 +226,7 @@ __marimo__/
 .streamlit/secrets.toml
 
 #datasets
-./arquivos/
+datasets/
 *csv
 *fasta
 

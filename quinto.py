@@ -1,0 +1,868 @@
+# ==========================================================
+# PIPELINE PROTEICO
+# PREDIÇÃO DE R-GENES EM PHYSALIS
+# ==========================================================
+
+import os
+import itertools
+import warnings
+warnings.filterwarnings("ignore")
+
+import numpy as np
+import pandas as pd
+
+from Bio import Entrez
+from Bio import SeqIO
+from Bio.SeqUtils.ProtParam import ProteinAnalysis
+
+# ==========================================================
+# MACHINE LEARNING
+# ==========================================================
+
+from sklearn.model_selection import (
+    train_test_split,
+    StratifiedKFold,
+    cross_val_score
+)
+
+from sklearn.metrics import (
+    classification_report,
+    confusion_matrix,
+    roc_auc_score,
+    roc_curve,
+    average_precision_score,
+    matthews_corrcoef,
+    f1_score,
+    silhouette_score,
+    davies_bouldin_score
+)
+
+from sklearn.ensemble import RandomForestClassifier
+
+from xgboost import XGBClassifier
+
+# ==========================================================
+# DIMENSIONALIDADE / CLUSTER
+# ==========================================================
+
+from sklearn.decomposition import PCA
+from sklearn.manifold import TSNE
+from sklearn.cluster import KMeans
+
+import hdbscan
+
+# ==========================================================
+# VISUALIZAÇÃO
+# ==========================================================
+
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+# ==========================================================
+# CONFIG
+# ==========================================================
+
+Entrez.email = "SEU_EMAIL@email.com"
+
+OUTPUT_DIR = "protein_rgenes"
+
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+# ==========================================================
+# DOWNLOAD PROTEÍNAS NCBI
+# ==========================================================
+
+def baixar_proteinas(query, arquivo_saida, max_records=1500):
+
+    print("\n================================")
+    print("DOWNLOAD")
+    print("================================")
+
+    handle = Entrez.esearch(
+        db="protein",
+        term=query,
+        retmax=max_records
+    )
+
+    record = Entrez.read(handle)
+
+    ids = record["IdList"]
+
+    print("IDs:", len(ids))
+
+    if len(ids) == 0:
+        return
+
+    handle = Entrez.efetch(
+        db="protein",
+        id=ids,
+        rettype="fasta",
+        retmode="text"
+    )
+
+    fasta = handle.read()
+
+    with open(arquivo_saida, "w") as f:
+        f.write(fasta)
+
+    print("Arquivo salvo:", arquivo_saida)
+
+# ==========================================================
+# QUERY POSITIVA
+# ==========================================================
+
+positive_query = """
+(
+"Solanum lycopersicum"[Organism]
+OR
+"Nicotiana benthamiana"[Organism]
+OR
+"Arabidopsis thaliana"[Organism]
+)
+AND
+(
+"NLR"
+OR
+"NBS-LRR"
+OR
+"NB-LRR"
+OR
+"TIR-NBS-LRR"
+OR
+"CC-NBS-LRR"
+OR
+"RLK"
+OR
+"RLP"
+OR
+"LRR receptor kinase"
+OR
+"plant disease resistance protein"
+OR
+"RPM1"
+OR
+"RPS2"
+OR
+"RPS4"
+OR
+"RPS5"
+OR
+"RPP"
+OR
+"SNC1"
+OR
+"ADR1"
+OR
+"NDR1"
+OR
+"EDS1"
+OR
+"PAD4"
+)
+NOT
+(
+partial
+OR
+hypothetical
+OR
+predicted
+OR
+fragment
+)
+"""
+
+# ==========================================================
+# QUERY NEGATIVA
+# ==========================================================
+
+negative_query = """
+(
+"Solanum lycopersicum"[Organism]
+OR
+"Nicotiana benthamiana"[Organism]
+OR
+"Arabidopsis thaliana"[Organism]
+)
+AND
+(
+"actin"
+OR
+"tubulin"
+OR
+"ribosomal protein"
+OR
+"ATP synthase"
+OR
+"photosystem"
+OR
+"glycolysis"
+OR
+"metabolic enzyme"
+OR
+"elongation factor"
+)
+NOT
+(
+"resistance"
+OR
+"NLR"
+OR
+"LRR"
+OR
+"immune"
+OR
+"virus"
+)
+"""
+
+# ==========================================================
+# DOWNLOADS
+# ==========================================================
+
+baixar_proteinas(
+    positive_query,
+    f"{OUTPUT_DIR}/positive.fasta"
+)
+
+baixar_proteinas(
+    negative_query,
+    f"{OUTPUT_DIR}/negative.fasta"
+)
+
+# ==========================================================
+# AMINOÁCIDOS
+# ==========================================================
+
+AA = list("ACDEFGHIKLMNPQRSTVWY")
+
+DIPEPTIDES = [
+    a+b
+    for a in AA
+    for b in AA
+]
+
+# ==========================================================
+# LIMPEZA
+# ==========================================================
+
+def limpar_proteina(seq):
+
+    seq = seq.upper()
+
+    valid = set(AA)
+
+    seq = "".join([
+        x for x in seq
+        if x in valid
+    ])
+
+    return seq
+
+# ==========================================================
+# AAC
+# ==========================================================
+
+def amino_acid_composition(seq):
+
+    total = len(seq)
+
+    if total == 0:
+        return [0]*20
+
+    return [
+        seq.count(a)/total
+        for a in AA
+    ]
+
+# ==========================================================
+# DIPEPTIDES
+# ==========================================================
+
+def dipeptide_composition(seq):
+
+    counts = dict.fromkeys(DIPEPTIDES, 0)
+
+    total = len(seq)-1
+
+    if total <= 0:
+        return [0]*len(DIPEPTIDES)
+
+    for i in range(total):
+
+        dp = seq[i:i+2]
+
+        if dp in counts:
+            counts[dp] += 1
+
+    return [
+        counts[d]/total
+        for d in DIPEPTIDES
+    ]
+
+# ==========================================================
+# FEATURES BIOQUÍMICAS
+# ==========================================================
+
+def biochemical_features(seq):
+
+    analysis = ProteinAnalysis(seq)
+
+    try:
+
+        mw = analysis.molecular_weight()
+
+        aromaticity = analysis.aromaticity()
+
+        instability = analysis.instability_index()
+
+        gravy = analysis.gravy()
+
+        iso = analysis.isoelectric_point()
+
+        helix, turn, sheet = analysis.secondary_structure_fraction()
+
+        return [
+            mw,
+            aromaticity,
+            instability,
+            gravy,
+            iso,
+            helix,
+            turn,
+            sheet
+        ]
+
+    except:
+
+        return [0]*8
+
+# ==========================================================
+# EXTRAÇÃO FEATURES
+# ==========================================================
+
+def extract_features(seq):
+
+    seq = limpar_proteina(seq)
+
+    if len(seq) < 80:
+        return None
+
+    try:
+
+        aac = amino_acid_composition(seq)
+
+        dpc = dipeptide_composition(seq)
+
+        bio = biochemical_features(seq)
+
+        length = [len(seq)]
+
+        return aac + dpc + bio + length
+
+    except:
+
+        return None
+
+# ==========================================================
+# DATASET
+# ==========================================================
+
+X = []
+y = []
+ids = []
+
+def processar_fasta(fasta, label):
+
+    total = 0
+    validas = 0
+
+    for record in SeqIO.parse(fasta, "fasta"):
+
+        total += 1
+
+        desc = record.description.lower()
+
+        bad_terms = [
+
+            "partial",
+            "fragment",
+            "hypothetical",
+            "predicted"
+
+        ]
+
+        if any(t in desc for t in bad_terms):
+            continue
+
+        seq = str(record.seq)
+
+        feats = extract_features(seq)
+
+        if feats is not None:
+
+            X.append(feats)
+
+            y.append(label)
+
+            ids.append(record.id)
+
+            validas += 1
+
+    print("\nArquivo:", fasta)
+    print("Total:", total)
+    print("Válidas:", validas)
+
+# ==========================================================
+# PROCESSAMENTO
+# ==========================================================
+
+processar_fasta(
+    f"{OUTPUT_DIR}/positive.fasta",
+    1
+)
+
+processar_fasta(
+    f"{OUTPUT_DIR}/negative.fasta",
+    0
+)
+
+# ==========================================================
+# ARRAYS
+# ==========================================================
+
+X = np.array(X)
+
+y = np.array(y)
+
+print("\nDataset:", X.shape)
+
+# ==========================================================
+# COLUNAS
+# ==========================================================
+
+aac_cols = [f"AAC_{a}" for a in AA]
+
+dpc_cols = [f"DPC_{d}" for d in DIPEPTIDES]
+
+bio_cols = [
+
+    "molecular_weight",
+    "aromaticity",
+    "instability",
+    "gravy",
+    "isoelectric_point",
+    "helix",
+    "turn",
+    "sheet",
+    "length"
+
+]
+
+columns = aac_cols + dpc_cols + bio_cols
+
+# ==========================================================
+# DATAFRAME
+# ==========================================================
+
+df = pd.DataFrame(
+    X,
+    columns=columns
+)
+
+df["label"] = y
+
+df["id"] = ids
+
+df.to_csv(
+    f"{OUTPUT_DIR}/protein_dataset.csv",
+    index=False
+)
+
+# ==========================================================
+# TRAIN TEST
+# ==========================================================
+
+X_train, X_test, y_train, y_test = train_test_split(
+    X,
+    y,
+    stratify=y,
+    test_size=0.2,
+    random_state=42
+)
+
+# ==========================================================
+# RANDOM FOREST
+# ==========================================================
+
+rf = RandomForestClassifier(
+    n_estimators=500,
+    max_depth=25,
+    random_state=42,
+    class_weight="balanced",
+    n_jobs=-1
+)
+
+rf.fit(X_train, y_train)
+
+rf_pred = rf.predict(X_test)
+
+rf_prob = rf.predict_proba(X_test)[:,1]
+
+# ==========================================================
+# XGBOOST
+# ==========================================================
+
+xgb = XGBClassifier(
+    n_estimators=500,
+    learning_rate=0.05,
+    max_depth=10,
+    subsample=0.8,
+    colsample_bytree=0.8,
+    random_state=42
+)
+
+xgb.fit(X_train, y_train)
+
+xgb_pred = xgb.predict(X_test)
+
+xgb_prob = xgb.predict_proba(X_test)[:,1]
+
+# ==========================================================
+# AVALIAÇÃO
+# ==========================================================
+
+def avaliar(nome, y_true, pred, prob):
+
+    print("\n")
+    print("="*60)
+    print(nome)
+    print("="*60)
+
+    print(classification_report(y_true, pred))
+
+    auc = roc_auc_score(y_true, prob)
+
+    mcc = matthews_corrcoef(y_true, pred)
+
+    f1 = f1_score(y_true, pred)
+
+    pr_auc = average_precision_score(y_true, prob)
+
+    print("ROC-AUC:", auc)
+
+    print("PR-AUC :", pr_auc)
+
+    print("MCC    :", mcc)
+
+    print("F1     :", f1)
+
+    cm = confusion_matrix(y_true, pred)
+
+    plt.figure(figsize=(6,5))
+
+    sns.heatmap(
+        cm,
+        annot=True,
+        fmt="d",
+        cmap="Blues"
+    )
+
+    plt.title(nome)
+
+    plt.show()
+
+avaliar(
+    "Random Forest",
+    y_test,
+    rf_pred,
+    rf_prob
+)
+
+avaliar(
+    "XGBoost",
+    y_test,
+    xgb_pred,
+    xgb_prob
+)
+
+# ==========================================================
+# CROSS VALIDATION
+# ==========================================================
+
+cv = StratifiedKFold(
+    n_splits=5,
+    shuffle=True,
+    random_state=42
+)
+
+scores_rf = cross_val_score(
+    rf,
+    X,
+    y,
+    cv=cv,
+    scoring="roc_auc"
+)
+
+scores_xgb = cross_val_score(
+    xgb,
+    X,
+    y,
+    cv=cv,
+    scoring="roc_auc"
+)
+
+print("\nRF ROC-AUC:", scores_rf.mean())
+
+print("XGB ROC-AUC:", scores_xgb.mean())
+
+# ==========================================================
+# FEATURE IMPORTANCE
+# ==========================================================
+
+importance = pd.DataFrame({
+
+    "feature": columns,
+
+    "importance": xgb.feature_importances_
+
+})
+
+importance = importance.sort_values(
+    by="importance",
+    ascending=False
+)
+
+importance.to_csv(
+    f"{OUTPUT_DIR}/feature_importance.csv",
+    index=False
+)
+
+plt.figure(figsize=(12,10))
+
+sns.barplot(
+    data=importance.head(25),
+    x="importance",
+    y="feature"
+)
+
+plt.title("Top Features")
+
+plt.show()
+
+# ==========================================================
+# PCA
+# ==========================================================
+
+pca = PCA(n_components=2)
+
+X_pca = pca.fit_transform(X)
+
+pca_df = pd.DataFrame({
+
+    "PC1": X_pca[:,0],
+
+    "PC2": X_pca[:,1],
+
+    "label": y
+
+})
+
+plt.figure(figsize=(8,6))
+
+sns.scatterplot(
+    data=pca_df,
+    x="PC1",
+    y="PC2",
+    hue="label"
+)
+
+plt.title("PCA")
+
+plt.show()
+
+# ==========================================================
+# TSNE
+# ==========================================================
+
+tsne = TSNE(
+    n_components=2,
+    perplexity=30,
+    random_state=42
+)
+
+X_tsne = tsne.fit_transform(X)
+
+tsne_df = pd.DataFrame({
+
+    "TSNE1": X_tsne[:,0],
+
+    "TSNE2": X_tsne[:,1],
+
+    "label": y
+
+})
+
+plt.figure(figsize=(8,6))
+
+sns.scatterplot(
+    data=tsne_df,
+    x="TSNE1",
+    y="TSNE2",
+    hue="label"
+)
+
+plt.title("t-SNE")
+
+plt.show()
+
+# ==========================================================
+# KMEANS
+# ==========================================================
+
+kmeans = KMeans(
+    n_clusters=2,
+    random_state=42
+)
+
+clusters_kmeans = kmeans.fit_predict(X)
+
+sil = silhouette_score(X, clusters_kmeans)
+
+db = davies_bouldin_score(X, clusters_kmeans)
+
+print("\nKMeans")
+
+print("Silhouette:", sil)
+
+print("Davies-Bouldin:", db)
+
+# ==========================================================
+# HDBSCAN
+# ==========================================================
+
+clusterer = hdbscan.HDBSCAN(
+    min_cluster_size=15
+)
+
+clusters_hdb = clusterer.fit_predict(X)
+
+# ==========================================================
+# VISUALIZAÇÃO CLUSTERS
+# ==========================================================
+
+cluster_df = pd.DataFrame({
+
+    "TSNE1": X_tsne[:,0],
+
+    "TSNE2": X_tsne[:,1],
+
+    "cluster": clusters_hdb
+
+})
+
+plt.figure(figsize=(8,6))
+
+sns.scatterplot(
+    data=cluster_df,
+    x="TSNE1",
+    y="TSNE2",
+    hue="cluster",
+    palette="tab20"
+)
+
+plt.title("HDBSCAN")
+
+plt.show()
+
+# ==========================================================
+# PHYSALIS PROTEÍNAS
+# ==========================================================
+
+physalis_query = """
+"Physalis peruviana"[Organism]
+AND
+(
+protein
+OR
+proteome
+OR
+translated
+)
+"""
+
+baixar_proteinas(
+    physalis_query,
+    f"{OUTPUT_DIR}/physalis.fasta",
+    1000
+)
+
+# ==========================================================
+# PREDIÇÃO PHYSALIS
+# ==========================================================
+
+resultados = []
+
+for record in SeqIO.parse(
+    f"{OUTPUT_DIR}/physalis.fasta",
+    "fasta"
+):
+
+    seq = str(record.seq)
+
+    feats = extract_features(seq)
+
+    if feats is None:
+        continue
+
+    feats = np.array(feats).reshape(1,-1)
+
+    prob = xgb.predict_proba(feats)[0][1]
+
+    resultados.append({
+
+        "id": record.id,
+
+        "descricao": record.description,
+
+        "probabilidade_resistencia": prob
+
+    })
+
+df_res = pd.DataFrame(resultados)
+
+df_res = df_res.sort_values(
+    by="probabilidade_resistencia",
+    ascending=False
+)
+
+df_res.to_csv(
+    f"{OUTPUT_DIR}/predicoes_physalis.csv",
+    index=False
+)
+
+print("\nTOP CANDIDATOS")
+
+print(df_res.head(20))
+
+# ==========================================================
+# EXPORTAR CLUSTERS
+# ==========================================================
+
+cluster_export = pd.DataFrame({
+
+    "id": ids,
+
+    "label": y,
+
+    "kmeans_cluster": clusters_kmeans,
+
+    "hdbscan_cluster": clusters_hdb
+
+})
+
+cluster_export.to_csv(
+    f"{OUTPUT_DIR}/clusters.csv",
+    index=False
+)
+
+print("\nPIPELINE FINALIZADO")
