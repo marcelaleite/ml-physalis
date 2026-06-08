@@ -1,0 +1,62 @@
+import re
+
+def localizar_motivos(seq):
+    posicoes = {}
+
+    for nome, pattern in MOTIFS.items():
+        match = re.search(pattern, seq)
+
+        if match:
+            posicoes[nome] = match.start()
+        else:
+            posicoes[nome] = None
+
+    return posicoes
+    
+
+def calcular_distancias(posicoes):
+
+    def distancia(a, b):
+        if posicoes[a] is None or posicoes[b] is None:
+            return -1
+        return posicoes[b] - posicoes[a]
+
+    return {
+        "dist_ploop_kinase2": distancia("P_LOOP", "KINASE2"),
+        "dist_kinase2_glpl": distancia("KINASE2", "GLPL"),
+        "dist_glpl_mhd": distancia("GLPL", "MHD")
+    }
+    
+def contar_motivos(posicoes):
+    return sum(
+        1 for v in posicoes.values()
+        if v is not None
+    )
+    
+# posições dos motivos
+posicoes = localizar_motivos(seq)
+
+# número de motivos encontrados
+num_motifs_detectados = contar_motivos(posicoes)
+
+# distâncias entre motivos
+distancias = calcular_distancias(posicoes)
+
+features["num_motifs_detectados"] = num_motifs_detectados
+
+features["dist_ploop_kinase2"] = \
+    distancias["dist_ploop_kinase2"]
+
+features["dist_kinase2_glpl"] = \
+    distancias["dist_kinase2_glpl"]
+
+features["dist_glpl_mhd"] = \
+    distancias["dist_glpl_mhd"]
+    
+    
+features["has_ploop"] = int(posicoes["P_LOOP"] is not None)
+features["has_kinase2"] = int(posicoes["KINASE2"] is not None)
+features["has_glpl"] = int(posicoes["GLPL"] is not None)
+features["has_mhd"] = int(posicoes["MHD"] is not None)
+
+
