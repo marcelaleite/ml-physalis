@@ -60,3 +60,35 @@ features["has_glpl"] = int(posicoes["GLPL"] is not None)
 features["has_mhd"] = int(posicoes["MHD"] is not None)
 
 
+
+# ======================================================
+# IMPORTÂNCIA POR PERMUTAÇÃO PARA O SVM (Novo)
+# ======================================================
+print("\n[SVM] Calculando a importância por permutação dos atributos...")
+from sklearn.inspection import permutation_importance
+
+# Calcula a permutação no X_test (pode usar X_train se quiser focar no ajuste ao treino)
+result_svm = permutation_importance(svm_model, X_test, y_test, n_repeats=5, random_state=42, n_jobs=-1)
+
+# Monta o DataFrame com os resultados
+importancia_svm = pd.DataFrame({
+    'feature': columns,
+    'importance_mean': result_svm.importances_mean
+}).sort_values('importance_mean', ascending=False)
+
+print("\nTop 20 features mais importantes para o SVM:")
+print(importancia_svm.head(20))
+
+# Gera o gráfico de barras igual ao do XGBoost
+top_svm = importancia_svm.head(20)
+plt.figure(figsize=(10,8))
+plt.barh(top_svm["feature"][::-1], top_svm["importance_mean"][::-1], color='seagreen')
+plt.xlabel("Queda no Desempenho (Média)")
+plt.ylabel("Feature / Atributo")
+plt.title("Top 20 Features - SVM Permutation Importance")
+plt.tight_layout()
+plt.savefig(f"{OUTPUT_DIR}/svm_importancia_permutacao.png", bbox_inches="tight", dpi=300)
+plt.close()
+print(f"[SVM] Gráfico salvo com sucesso em '{OUTPUT_DIR}/svm_importancia_permutacao.png'!")
+
+
