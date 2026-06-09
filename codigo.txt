@@ -98,3 +98,4 @@ g = sns.catplot(
 
 g.set_xticklabels(rotation=45)
 plt.show()
+
