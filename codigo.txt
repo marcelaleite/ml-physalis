@@ -1,101 +1,122 @@
-#Opção 1 — Scatterplot (mais informativo)
+import re
 
-import pandas as pd
-import matplotlib.pyplot as plt
-import seaborn as sns
+MOTIFS = {
 
-plt.figure(figsize=(12,6))
+    # ==========================
+    # NLR (CNL/TNL)
+    # ==========================
+    "P_LOOP": r"[AGST].{3,5}GK[TS]",
+    "KINASE2": r"[AILVMFYW]{2,5}DD[VILM][WFY]",
+    "GLPL": r"G[LVI][PAST][LIVAF]",
+    "MHD": r"[MVIL][HN][DE][VILAST]",
 
-sns.scatterplot(
-    data=df_validacao,
-    x="motivo",
-    y="contagem",
-    hue="planta",
-    style="modelo",
-    s=200
+    # ==========================
+    # Protein Kinase (KIN/RLK)
+    # ==========================
+    "HRD": r"HRD[LIVMFY]",
+    "DFG": r"DFG",
+
+    # ==========================
+    # LRR (RLP/RLK)
+    # ==========================
+    "LRR1": r"L..L..L..N",
+    "LRR2": r"L[A-Z]{2}L[A-Z]{2}L[A-Z]{2}[NCT]",
+
+    # ==========================
+    # TIR
+    # ==========================
+    "TIR1": r"FYW[A-Z]{2}L",
+    "TIR2": r"G[A-Z]{2}WK",
+
+    # ==========================
+    # LysM (LYK)
+    # ==========================
+    "LYSM1": r"[GST]W[GST]",
+    "LYSM2": r"Y[A-Z]{2}G",
+
+    # ==========================
+    # Lectin (LECRK)
+    # ==========================
+    "LECTIN1": r"Q.D.N.VY",
+    "LECTIN2": r"G...D.D"
+}
+
+
+def extrair_motifs(seq):
+
+    features = []
+
+    encontrados = {}
+
+    for nome, regex in MOTIFS.items():
+
+        encontrados[nome] = int(
+            re.search(regex, seq) is not None
+        )
+
+        features.append(encontrados[nome])
+
+    # ===================
+    # Contadores por classe
+    # ===================
+
+    num_nlr = (
+        encontrados["P_LOOP"] +
+        encontrados["KINASE2"] +
+        encontrados["GLPL"] +
+        encontrados["MHD"]
+    )
+
+    num_kinase = (
+        encontrados["HRD"] +
+        encontrados["DFG"]
+    )
+
+    num_lrr = (
+        encontrados["LRR1"] +
+        encontrados["LRR2"]
+    )
+
+    num_tir = (
+        encontrados["TIR1"] +
+        encontrados["TIR2"]
+    )
+
+    num_lysm = (
+        encontrados["LYSM1"] +
+        encontrados["LYSM2"]
+    )
+
+    num_lectin = (
+        encontrados["LECTIN1"] +
+        encontrados["LECTIN2"]
+    )
+
+    features.extend([
+        num_nlr,
+        num_kinase,
+        num_lrr,
+        num_tir,
+        num_lysm,
+        num_lectin
+    ])
+
+    return features
+    
+motif_summary_features = [
+
+    "NUM_NLR_MOTIFS",
+    "NUM_KINASE_MOTIFS",
+    "NUM_LRR_MOTIFS",
+    "NUM_TIR_MOTIFS",
+    "NUM_LYSM_MOTIFS",
+    "NUM_LECTIN_MOTIFS"
+]
+
+feature_names = (
+    ["protein_length"]
+    + aac_features
+    + dipep_features
+    + motif_features
+    + motif_summary_features
 )
-
-plt.title(
-    "Validação biológica dos motivos conservados"
-)
-
-plt.ylabel("Número de ocorrências")
-plt.xlabel("Motivo")
-
-plt.legend(
-    bbox_to_anchor=(1.05,1),
-    loc="upper left"
-)
-
-plt.tight_layout()
-plt.show()
-
-
-#Opção 2 — Bubble Chart
-plt.figure(figsize=(12,6))
-
-sns.scatterplot(
-    data=df_validacao,
-    x="motivo",
-    y="modelo",
-    hue="planta",
-    size="contagem",
-    sizes=(50,600)
-)
-
-plt.title(
-    "Distribuição dos motivos por modelo e espécie"
-)
-
-plt.tight_layout()
-plt.show()
-
-
-#Opção 3 — Heatmap (o melhor para publicação)
-df_validacao["grupo"] = (
-    df_validacao["planta"]
-    + "_"
-    + df_validacao["modelo"]
-)
-
-pivot = df_validacao.pivot_table(
-    index="motivo",
-    columns="grupo",
-    values="contagem",
-    fill_value=0
-)
-
-
-import seaborn as sns
-
-plt.figure(figsize=(14,6))
-
-sns.heatmap(
-    pivot,
-    annot=True,
-    cmap="YlGnBu"
-)
-
-plt.title(
-    "Distribuição dos motivos conservados"
-)
-
-plt.tight_layout()
-plt.show()
-
-#Opção 4 — Facetas por planta (minha favorita)
-
-g = sns.catplot(
-    data=df_validacao,
-    x="motivo",
-    y="contagem",
-    hue="modelo",
-    col="planta",
-    kind="bar",
-    height=5,
-    aspect=1.2
-)
-
-g.set_xticklabels(rotation=45)
-plt.show()
-
